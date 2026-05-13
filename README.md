@@ -88,8 +88,9 @@ porba/
 ├── data.py              # clean CIFAR-10 subset loader
 ├── neural_cleanse.py    # trigger reverse-engineering (the core algorithm)
 ├── anomaly.py           # MAD-based outlier detection on mask norms
-├── detect.py            # CLI entry point
-├── checkpoints/         # user-supplied .pth / .pt model files
+├── detect.py            # CLI entry point — runs detection on a checkpoint
+├── train_models.py      # CLI entry point — trains benign + trojan checkpoints
+├── checkpoints/         # trained .pt model files (input to detect.py)
 ├── data/                # CIFAR-10 (auto-downloaded on first run)
 └── results/             # auto-created: recovered triggers + summary.json
 ```
@@ -104,6 +105,7 @@ porba/
 | `neural_cleanse.py` | `reverse_engineer_trigger(model, target_class, loader)` runs the optimization for one class. `run_all_classes` is a thin loop over all 10 classes. |
 | `anomaly.py` | `mad_anomaly_index(values)` returns per-class anomaly indices and an outlier mask using the MAD test. |
 | `detect.py` | CLI: loads model, calls the two stages, prints a table, writes artifacts to `results/`. |
+| `train_models.py` | CLI: trains benign and/or trojan ResNet-18 on CIFAR-10 with BadNets or WaNet, saves checkpoints in a format `detect.py` can load directly. |
 
 ---
 
@@ -126,7 +128,142 @@ Tested with Python 3.10+.
 
 ---
 
-## 5. Usage
+## 5. Conventions
+
+To keep the training pipeline and the detector consistent, the project uses one
+shared convention for image inputs:
+
+- **Pixel space `[0, 1]`, no per-channel normalization.** `transforms.ToTensor()`
+  alone is used in both `train_models.py` and `data.py`. The model is trained,
+  evaluated, and detected on `[0, 1]` inputs end-to-end. There is no
+  `transforms.Normalize` step anywhere.
+
+This matters for two reasons:
+
+1. **Trigger semantics.** A BadNets trigger with `trigger_value=1.0` is meant to
+   be a fully-bright pixel. That only makes sense in `[0, 1]` space — in
+   normalized space the same value would be a strange off-distribution shade.
+2. **Detection correctness.** Neural Cleanse reverse-engineers triggers that
+   live in the model's actual input space. If the model was trained on `[0, 1]`
+   inputs but the detector fed it normalized inputs, the model would see a
+   distribution it was never trained on, harming both classification and trigger
+   recovery.
+
+If a checkpoint comes from elsewhere and *was* trained with normalization
+(`transforms.Normalize` with CIFAR-10 mean/std), apply the same normalization to
+the inputs of both `train_models.py` and the detector — keep them matched.
+
+---
+
+## 6. Training your own models
+
+Use `train_models.py` to produce benign and trojan ResNet-18 checkpoints on
+CIFAR-10. The script supports two attacks:
+
+- **BadNets** — a fixed white square patch in the bottom-right corner of every
+  poisoned training image. All poisoned images are relabeled to the target class.
+- **WaNet** — a small smooth warping field applied to poisoned images,
+  visually nearly identical to the original. All poisoned images are relabeled
+  to the target class.
+
+### Train a benign + BadNets-trojan pair (defaults)
+
+```bash
+python train_models.py --mode both --attack badnets --epochs 30
+```
+
+This produces, in `./checkpoints/`:
+
+| File | Description |
+|---|---|
+| `benign_resnet18.pt` | Clean ResNet-18 trained on unmodified CIFAR-10. |
+| `trojan_resnet18.pt` | ResNet-18 trained on 10%-poisoned CIFAR-10 with a 4×4 white trigger; target class 0. |
+
+### Train a WaNet trojan
+
+```bash
+python train_models.py --mode trojan --attack wanet --epochs 30 \
+    --target_label 0 --poison_rate 0.1
+```
+
+### Train only the benign baseline
+
+```bash
+python train_models.py --mode benign --epochs 30
+```
+
+### Important flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--mode` | `both` | `benign`, `trojan`, or `both`. |
+| `--attack` | `badnets` | `badnets` or `wanet`. |
+| `--target_label` | `0` | Class the backdoor flips inputs into. |
+| `--poison_rate` | `0.1` | Fraction of the training set to poison. |
+| `--trigger_size` | `4` | Side length of the BadNets patch (pixels). |
+| `--wanet_grid_rescale` | `0.5` | Warping intensity for WaNet. |
+| `--epochs` | `30` | Training epochs (use 50+ for stronger models). |
+| `--batch_size` | `128` | Training batch size. |
+| `--lr` | `0.1` | Initial SGD learning rate; decayed at 50% and 75% of epochs. |
+| `--save_dir` | `./checkpoints` | Where the `.pt` files are written. |
+| `--device` | `auto` | `auto`, `cpu`, or `cuda`. |
+
+### Saved checkpoint format
+
+Each `.pt` file is a Python dict with these keys:
+
+```
+{
+    "model_state_dict": <state-dict matching model.ResNet18>,
+    "epoch": <best-epoch index>,
+    "best_clean_acc": <float, 0–100>,
+    "history": {"train_loss", "train_acc", "clean_test_acc", "asr"},
+    "metadata": {
+        "model_name": "resnet18",
+        "dataset": "cifar10",
+        "mode": "benign" | "trojan",
+        "attack": null | "badnets" | "wanet",
+        "target_label": <int> | null,
+        "poison_rate": <float>,
+        ...
+    },
+}
+```
+
+`detect.py` automatically unwraps `model_state_dict`; the other fields are
+informational and useful for thesis figures (e.g. plotting training curves
+from `history`).
+
+### Expected results
+
+A 30-epoch run with the defaults on CIFAR-10 typically yields:
+
+| Model | Clean test accuracy | Attack success rate |
+|---|---|---|
+| Benign | ~91–93% | ≈10% (chance) |
+| BadNets trojan | ~90–92% | ~99% |
+| WaNet trojan | ~89–91% | ~95–99% |
+
+If clean accuracy stays under 80%, double-check that data augmentation
+(`RandomCrop`, `RandomHorizontalFlip`) is enabled, that the learning-rate
+schedule is firing, and that training did not stop early.
+
+### After training
+
+Run detection directly on the produced checkpoint:
+
+```bash
+python detect.py --model checkpoints/trojan_resnet18.pt --out-dir results/trojan
+python detect.py --model checkpoints/benign_resnet18.pt --out-dir results/benign
+```
+
+The trojan run should print `VERDICT: TROJAN` with the suspected target class
+matching `--target_label` used during training. The benign run should print
+`VERDICT: BENIGN`.
+
+---
+
+## 7. Usage
 
 ### Inputs
 
@@ -168,7 +305,7 @@ To speed up a CPU run at modest cost in detection quality, lower `STEPS` in
 
 ---
 
-## 6. Output
+## 8. Output
 
 ### Console
 
@@ -212,7 +349,7 @@ BadNets).
 
 ---
 
-## 7. How to read the numbers
+## 9. How to read the numbers
 
 - **`mask L1`** is the sum of all values in the recovered mask. The mask lives on a
   32×32 grid with values in `[0, 1]`, so L1 is bounded by 1024 (entire image
@@ -235,19 +372,17 @@ BadNets).
 |---|---|---|
 | Benign | All similar (e.g. all in 30–200) | `BENIGN` |
 | BadNets-trojan | Target class has L1 ≪ others (often 5–30 vs 40–200+) | `TROJAN` |
-| WaNet-trojan | Less reliable — see §9 | possibly `BENIGN` (false negative) |
+| WaNet-trojan | Less reliable — see §12 | possibly `BENIGN` (false negative) |
 
 ---
 
-## 8. Configuration reference
+## 10. Configuration reference
 
 All tunables live in `config.py`.
 
 ### Dataset / model shape
 - `NUM_CLASSES = 10`
 - `IMAGE_SHAPE = (3, 32, 32)`
-- `CIFAR10_MEAN`, `CIFAR10_STD` — normalization constants applied inside the forward
-  pass. Must match the training-time normalization for the checkpoint.
 
 ### Clean validation subset
 - `VAL_SAMPLES = 500` — number of clean test images.
@@ -273,7 +408,7 @@ All tunables live in `config.py`.
 
 ---
 
-## 9. Algorithm details
+## 11. Algorithm details
 
 This section unpacks `neural_cleanse.reverse_engineer_trigger`.
 
@@ -296,11 +431,11 @@ For a clean batch `x` of pixel-space images in `[0, 1]`:
 mask    = sigmoid(raw_mask)            # (1, 32, 32)
 pattern = sigmoid(raw_pattern)         # (3, 32, 32)
 x_adv   = (1 - mask) * x + mask * pattern
-logits  = model(normalize(x_adv))      # normalize with CIFAR-10 mean/std
+logits  = model(x_adv)                 # model trained on [0, 1] inputs
 ```
 
-Normalization happens *after* the trigger is applied, so the recovered trigger lives
-in interpretable pixel space (and can be saved as a viewable PNG).
+There is no normalization step. The recovered trigger lives in interpretable
+pixel space and can be saved directly as a viewable PNG (see §5 Conventions).
 
 ### Loss
 
@@ -346,7 +481,7 @@ smallest mask among the flagged is reported as the suspected backdoor target.
 
 ---
 
-## 10. Limitations and known caveats
+## 12. Limitations and known caveats
 
 - **WaNet.** Neural Cleanse assumes the trigger can be written as a small *additive*
   mask + pattern overlay. WaNet's trigger is a global *warping field*, which cannot
@@ -371,7 +506,7 @@ smallest mask among the flagged is reported as the suspected backdoor target.
 
 ---
 
-## 11. References
+## 13. References
 
 - B. Wang et al., *Neural Cleanse: Identifying and Mitigating Backdoor Attacks in
   Neural Networks*, IEEE S&P 2019.

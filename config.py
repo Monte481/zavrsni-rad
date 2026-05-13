@@ -9,10 +9,10 @@ import torch
 NUM_CLASSES = 10
 IMAGE_SHAPE = (3, 32, 32)
 
-# CIFAR-10 normalization (mean / std per channel).
-# These must match what the model was trained with.
-CIFAR10_MEAN = (0.4914, 0.4822, 0.4465)
-CIFAR10_STD = (0.2470, 0.2435, 0.2616)
+# NOTE: this pipeline operates on raw [0, 1] pixel inputs end-to-end — no
+# normalization. Both train_models.py and the detector skip transforms.Normalize.
+# If you swap in a checkpoint that was trained with normalization, undo this
+# convention everywhere (see README §"Conventions").
 
 # Clean validation subset used for trigger reverse-engineering
 VAL_SAMPLES = 500

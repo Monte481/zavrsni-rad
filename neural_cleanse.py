@@ -20,13 +20,6 @@ import torch.nn.functional as F
 import config
 
 
-def _normalize(x, mean, std):
-    """Convert pixel-space [0, 1] tensor to model-input normalized tensor."""
-    mean = torch.tensor(mean, device=x.device).view(1, 3, 1, 1)
-    std = torch.tensor(std, device=x.device).view(1, 3, 1, 1)
-    return (x - mean) / std
-
-
 def _apply_trigger(x, mask, pattern):
     """Blend trigger into a clean batch in pixel space.
 
@@ -80,7 +73,9 @@ def reverse_engineer_trigger(model, target_class, data_loader, cfg=config):
         pattern = torch.sigmoid(raw_pattern)
 
         x_adv = _apply_trigger(x, mask, pattern)
-        logits = model(_normalize(x_adv, cfg.CIFAR10_MEAN, cfg.CIFAR10_STD))
+        # Training and detection both operate in pixel space [0, 1] — no
+        # normalization step. See README §"Conventions".
+        logits = model(x_adv)
 
         ce_loss = F.cross_entropy(logits, y_target)
         # Mean instead of sum keeps the penalty scale independent of image size.
