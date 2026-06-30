@@ -8,10 +8,10 @@ rekonstruirane slike okidača.
 Detekcija se temelji na **Neural Cleanse** i ima dvije
 varijante:
 
-- **klasična** — koristi mali skup čistih slika (`detect.py`),
+- **klasična** — koristi mali skup čistih slika (`detect.py --data-source clean`),
 - **data-free** — ne treba nikakve prave podatke; sintetizira ulaze izravno iz
   modela pomoću **DeepInversion**-a i na njima pokreće
-  isti algoritam (`detect_datafree.py`).
+  isti algoritam (`detect.py --data-source synthetic`, zadano).
 
 ---
 
@@ -57,8 +57,7 @@ Python 3.10+.
 | `anomaly.py` | MAD outlier test nad normama maski. |
 | `deep_inversion.py` | Data-free sinteza slika iz modela (DeepInversion + BN matching). |
 | `train_models.py` | Treniranje benign/trojan modela (BadNets/WaNet) na CIFAR-10 ili MNIST. |
-| `detect.py` | Detekcija na čistim podacima. |
-| `detect_datafree.py` | Detekcija na čistim ili sintetičkim (data-free) podacima. |
+| `detect.py` | Detekcija na čistim ili sintetičkim (data-free) podacima. |
 
 Izlazni direktoriji (`checkpoints/`, `results/`, `results_synthetic/`,
 `data_synthetic/`, `data/`) kreiraju se automatski i nisu dio repozitorija.
@@ -88,14 +87,14 @@ Sprema `benign_resnet18.pt` / `trojan_resnet18.pt` u `--save_dir` (zadano
 ### 2. Detekcija na čistim podacima
 
 ```bash
-python detect.py --model checkpoints/trojan_resnet18.pt
-python detect.py --model checkpoints/trojan_resnet18.pt --dataset mnist
+python detect.py --model checkpoints/trojan_resnet18.pt --data-source clean
+python detect.py --model checkpoints/trojan_resnet18.pt --data-source clean --dataset mnist
 ```
 
 ### 3. Data-free detekcija (bez pravih podataka)
 
 ```bash
-python detect_datafree.py --model checkpoints/trojan_resnet18.pt --data-source synthetic
+python detect.py --model checkpoints/trojan_resnet18.pt --data-source synthetic
 ```
 
 Prvo pokretanje sintetizira slike iz modela (spori dio) i cache-ira ih u

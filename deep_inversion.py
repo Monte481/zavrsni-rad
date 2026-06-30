@@ -1,11 +1,9 @@
 import os
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 from torchvision.utils import save_image
-
 import config
 
 
@@ -35,27 +33,27 @@ class _BNStatHook:
         self.hook.remove()
 
 
-def _attach_bn_hooks(model):
+def attach_bn_hooks(model):
     return [_BNStatHook(m) for m in model.modules() if isinstance(m, nn.BatchNorm2d)]
 
 
-def _detach_bn_hooks(hooks):
+def detach_bn_hooks(hooks):
     for h in hooks:
         h.close()
 
 
-def _tv_loss(x: torch.Tensor) -> torch.Tensor:
+def tv_loss(x: torch.Tensor) -> torch.Tensor:
     # total variation prior (glatkoća slike)
     dx = x[:, :, :, 1:] - x[:, :, :, :-1]
     dy = x[:, :, 1:, :] - x[:, :, :-1, :]
     return dx.abs().mean() + dy.abs().mean()
 
 
-def _l2_loss(x: torch.Tensor) -> torch.Tensor:
+def l2_loss(x: torch.Tensor) -> torch.Tensor:
     return x.pow(2).mean()
 
 
-def _checkpoint_key(checkpoint_path: str) -> str:
+def checkpoint_key(checkpoint_path: str) -> str:
     # Stabilan ključ za ime mape: <roditeljski_dir>__<naziv_bez_ekstenzije>.
     # Razdvaja trojan/benign cache koji žive u istom checkpoint direktoriju.
     norm = os.path.normpath(checkpoint_path)
@@ -65,7 +63,7 @@ def _checkpoint_key(checkpoint_path: str) -> str:
 
 
 def default_cache_dir(checkpoint_path: str, root: str = "data_synthetic") -> str:
-    return os.path.join(root, _checkpoint_key(checkpoint_path))
+    return os.path.join(root, checkpoint_key(checkpoint_path))
 
 
 def generate_synthetic(
@@ -129,7 +127,7 @@ def generate_synthetic(
         optimizer = torch.optim.Adam([x], lr=lr, betas=(0.5, 0.9))
         target = torch.full((per_class,), c, dtype=torch.long, device=device)
 
-        hooks = _attach_bn_hooks(model)
+        hooks = attach_bn_hooks(model)
         try:
             for step in range(iters):
                 optimizer.zero_grad()
@@ -138,8 +136,8 @@ def generate_synthetic(
                 ce = F.cross_entropy(logits, target)
 
                 r_bn = sum(h.r_feature for h in hooks)
-                tv = _tv_loss(x)
-                l2 = _l2_loss(x)
+                tv = tv_loss(x)
+                l2 = l2_loss(x)
 
                 loss = ce + a_bn * r_bn + a_tv * tv + a_l2 * l2
                 loss.backward()
@@ -155,7 +153,7 @@ def generate_synthetic(
                           f"loss={loss.item():.3f}  ce={ce.item():.3f}  "
                           f"r_bn={float(r_bn):.3f}  acc={acc:.2f}")
         finally:
-            _detach_bn_hooks(hooks)
+            detach_bn_hooks(hooks)
 
         imgs = x.detach().cpu()
         per_class_tensors[c] = imgs
